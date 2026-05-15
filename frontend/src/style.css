@@ -1,0 +1,138 @@
+@import url("https://fonts.googleapis.com/css2?family=Abril+Fatface&family=Poppins:wght@400;500;600;700&display=swap");
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: "Poppins", Arial, sans-serif;
+  background: linear-gradient(135deg, #ff6ec4, #7873f5, #4ade80, #facc15);
+  background-size: 400% 400%;
+  animation: gradientMove 12s ease infinite;
+}
+
+@keyframes gradientMove {
+  0% {
+    background-position: 0% 50%;
+  }
+
+  50% {
+    background-position: 100% 50%;
+  }
+
+  100% {
+    background-position: 0% 50%;
+  }
+}
+
+.container {
+  min-height: 100vh;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+}
+
+.card {
+  width: 390px;
+  background: rgba(25, 150, 223, 0.94);
+  padding: 30px;
+  border-radius: 18px;
+  box-shadow: 0 12px 35px rgba(0, 0, 0, 0.2);
+}
+
+h1 {
+  margin: 0;
+  text-align: center;
+  font-family: "Abril Fatface", "Poppins", Arial, sans-serif;
+  font-size: 44px;
+  font-weight: 700;
+  letter-spacing: 1.5px;
+  color: #1d1a55;
+  text-shadow: 0 0 12px rgba(255, 255, 255, 0.7), 0 4px 10px rgba(0, 0, 0, 0.15);
+}
+
+.subtitle {
+  text-align: center;
+  color: #555;
+  margin-bottom: 24px;
+  font-size: 14px;
+  font-weight: 400;
+}
+
+.tabs {
+  display: flex;
+  gap: 10px;
+  margin-bottom: 20px;
+}
+
+.tabs button {
+  flex: 1;
+  background: #e9e9e9;
+  color: #222;
+}
+
+.tabs button.active {
+  background: #222;
+  color: white;
+}
+
+.form {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.hidden {
+  display: none;
+}
+
+input {
+  padding: 12px;
+  border: 1px solid #ccc;
+  border-radius: 9px;
+  font-size: 15px;
+  font-family: "Poppins", Arial, sans-serif;
+}
+
+button {
+  padding: 12px;
+  background: #222;
+  color: white;
+  border: none;
+  border-radius: 9px;
+  font-size: 15px;
+  font-weight: 600;
+  font-family: "Poppins", Arial, sans-serif;
+  cursor: pointer;
+}
+
+#loginForm button[type="submit"] {
+  background: #ffeb3b;
+  color: #222;
+}
+
+button:hover {
+  opacity: 0.9;
+}
+
+#message {
+  text-align: center;
+  margin-top: 18px;
+  font-weight: 600;
+  font-size: 14px;
+}
+
+.success {
+  color: green;
+}
+
+.error {
+  color: red;
+}
+
+.user-info {
+  text-align: center;
+  color: #333;
+  font-size: 14px;
+}
