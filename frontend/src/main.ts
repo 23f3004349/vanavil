@@ -1,6 +1,6 @@
 import "./style.css";
 
-const API_BASE_URL = "http://127.0.0.1:8000";
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL;
 
 const app = document.querySelector<HTMLDivElement>("#app")!;
 
@@ -227,7 +227,8 @@ function renderAdminDashboard(user: User) {
         <nav class="sidebar-menu">
           <button class="menu-item active" data-page="create-task">Create Task</button>
           <button class="menu-item" data-page="all-tasks">All Tasks</button>
-          <button class="menu-item" data-page="submissions">Submissions</button>
+          <button class="menu-item" data-page="pending-submissions">Pending Submissions</button>
+          <button class="menu-item" data-page="reviewed-submissions">Reviewed Submissions</button>
           <button class="menu-item" data-page="scoreboard">Scoreboard</button>
         </nav>
 
@@ -272,9 +273,14 @@ function renderAdminDashboard(user: User) {
       await loadAdminTasksPage(1);
     }
 
-    if (page === "submissions") {
-      pageTitle.textContent = "User Submissions";
-      await loadAdminSubmissions(user);
+    if (page === "pending-submissions") {
+      pageTitle.textContent = "Pending Submissions";
+      await loadAdminSubmissions(user, "pending");
+    }
+
+    if (page === "reviewed-submissions") {
+      pageTitle.textContent = "Reviewed Submissions";
+      await loadAdminSubmissions(user, "reviewed");
     }
 
     if (page === "scoreboard") {
@@ -596,7 +602,7 @@ function renderAdminTaskEditForm(task: any, user: User, currentPage: number) {
   });
 }
 
-async function loadAdminSubmissions(user: User) {
+async function loadAdminSubmissions(user: User, filter: "pending" | "reviewed") {
   const pageContent = document.querySelector<HTMLElement>("#pageContent")!;
 
   const response = await fetch(`${API_BASE_URL}/admin/submissions`, {
@@ -606,15 +612,21 @@ async function loadAdminSubmissions(user: User) {
   });
 
   const submissions: any[] = await response.json();
+  const filtered = submissions.filter((item) => {
+    if (filter === "pending") {
+      return item.status !== "reviewed";
+    }
+    return item.status === "reviewed";
+  });
 
   pageContent.innerHTML = `
     <div class="content-card">
-      <h2>User Submissions</h2>
+      <h2>${filter === "pending" ? "Pending Submissions" : "Reviewed Submissions"}</h2>
 
       ${
-        submissions.length === 0
-          ? `<p>No submissions yet.</p>`
-          : submissions
+        filtered.length === 0
+          ? `<p>${filter === "pending" ? "No pending submissions." : "No reviewed submissions."}</p>`
+          : filtered
               .map(
                 (item) => `
                   <div class="review-item">
@@ -628,15 +640,23 @@ async function loadAdminSubmissions(user: User) {
                         : ""
                     }
                     <p>Status: ${item.status}</p>
-
-                    <form class="review-form" data-id="${item.id}">
-                      <input type="number" name="stars" placeholder="Stars" min="0" value="${item.stars_given ?? ""}" required />
-                      <textarea name="review" placeholder="Admin review" required>${item.admin_review ?? ""}</textarea>
-                      <div class="form-actions">
-                        <button type="submit">Save Review</button>
-                        <button type="button" class="delete-review-btn" data-id="${item.id}">Delete Review</button>
-                      </div>
-                    </form>
+                    ${
+                      filter === "pending"
+                        ? `<form class="review-form" data-id="${item.id}">
+                            <input type="number" name="stars" placeholder="Stars" min="0" value="${item.stars_given ?? ""}" required />
+                            <textarea name="review" placeholder="Admin review" required>${item.admin_review ?? ""}</textarea>
+                            <div class="form-actions">
+                              <button type="submit">Save Review</button>
+                              <button type="button" class="delete-review-btn" data-id="${item.id}">Delete Review</button>
+                            </div>
+                          </form>`
+                        : `<div class="review-summary">
+                            <p><strong>Stars:</strong> ${item.stars_given ?? "N/A"}</p>
+                            <p><strong>Review:</strong> ${item.admin_review ?? "N/A"}</p>
+                            <p><strong>Reviewed at:</strong> ${item.reviewed_at ?? "-"}</p>
+                            <button type="button" class="delete-review-btn" data-id="${item.id}">Reopen Review</button>
+                          </div>`
+                    }
                   </div>
                 `
               )
@@ -645,7 +665,38 @@ async function loadAdminSubmissions(user: User) {
     </div>
   `;
 
-  attachReviewForms(user);
+  if (filter === "pending") {
+    attachReviewForms(user);
+  } else {
+    attachReopenButtons(user);
+  }
+}
+
+function attachReopenButtons(user: User) {
+  const pageContent = document.querySelector<HTMLElement>("#pageContent")!;
+  pageContent.querySelectorAll<HTMLButtonElement>(".delete-review-btn").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const submissionId = button.dataset.id;
+      if (!submissionId || !confirm("Reopen this reviewed submission for review?")) {
+        return;
+      }
+
+      const response = await fetch(`${API_BASE_URL}/admin/submissions/${submissionId}`, {
+        method: "DELETE",
+        headers: {
+          "x-admin-key": user.admin_key || "",
+        },
+      });
+
+      if (response.ok) {
+        alert("Submission reopened for review");
+        await loadAdminSubmissions(user, "reviewed");
+      } else {
+        const data = await response.json();
+        alert(data.detail || "Reopen failed");
+      }
+    });
+  });
 }
 
 function attachReviewForms(user: User) {
@@ -674,7 +725,7 @@ function attachReviewForms(user: User) {
 
       if (response.ok) {
         alert("Review submitted");
-        await loadAdminSubmissions(user);
+        await loadAdminSubmissions(user, "pending");
       } else {
         const data = await response.json();
         alert(data.detail || "Review failed");
@@ -698,7 +749,7 @@ function attachReviewForms(user: User) {
 
       if (response.ok) {
         alert("Review deleted");
-        await loadAdminSubmissions(user);
+        await loadAdminSubmissions(user, "pending");
       } else {
         const data = await response.json();
         alert(data.detail || "Delete review failed");
@@ -882,6 +933,7 @@ async function loadUserTasks(user: User, page: number = 1) {
                       <th>Type</th>
                       <th>Start</th>
                       <th>End</th>
+                      <th>Status</th>
                       <th>Stars</th>
                       <th>Submit</th>
                     </tr>
@@ -902,9 +954,12 @@ async function loadUserTasks(user: User, page: number = 1) {
                               <td>${task.task_type}</td>
                               <td>${task.start_date}</td>
                               <td>${task.end_date}</td>
+                              <td><span class="status-badge status-${task.submission_status.toLowerCase()}">${task.submission_status}</span></td>
                               <td>${task.max_stars}</td>
                               <td>
-                                <button type="button" class="open-submit-modal-btn" data-task-id="${task.id}" data-task-name="${task.task_name}" data-description="${safeDescription}">Submit</button>
+                                <button type="button" class="open-submit-modal-btn" data-task-id="${task.id}" data-task-name="${task.task_name}" data-description="${safeDescription}" ${task.can_submit ? "" : "disabled"}>
+                                  ${task.can_submit ? "Submit" : task.submission_status}
+                                </button>
                               </td>
                             </tr>
                           `;

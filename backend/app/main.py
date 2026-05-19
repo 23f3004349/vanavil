@@ -1,7 +1,6 @@
 import os
-import shutil
 import uuid
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 from fastapi import FastAPI, Depends, HTTPException, UploadFile, File, Form, Header
 from fastapi.middleware.cors import CORSMiddleware
@@ -28,6 +27,34 @@ app.add_middleware(
 
 UPLOAD_DIR = "uploads"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
+
+MAX_UPLOAD_SIZE = 10 * 1024 * 1024  # 10 MB
+
+ALLOWED_FILE_TYPES = {
+    "image/jpeg",
+    "image/png",
+    "image/webp",
+    "audio/mpeg",
+    "audio/mp3",
+    "audio/wav",
+    "audio/webm",
+    "application/pdf",
+    "application/msword",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+}
+
+ALLOWED_EXTENSIONS = {
+    ".jpg",
+    ".jpeg",
+    ".png",
+    ".webp",
+    ".mp3",
+    ".wav",
+    ".webm",
+    ".pdf",
+    ".doc",
+    ".docx",
+}
 
 app.mount("/uploads", StaticFiles(directory=UPLOAD_DIR), name="uploads")
 
@@ -242,6 +269,24 @@ def get_user_tasks(user_id: int, db: Session = Depends(get_db)):
     result = []
 
     for task in tasks:
+        existing_submission = (
+            db.query(TaskSubmission)
+            .filter(TaskSubmission.task_id == task.id)
+            .filter(TaskSubmission.user_id == user_id)
+            .order_by(TaskSubmission.id.desc())
+            .first()
+        )
+
+        submission_status = "Pending"
+        can_submit = True
+        if existing_submission:
+            if existing_submission.status == "reviewed":
+                submission_status = "Reviewed"
+                can_submit = False
+            else:
+                submission_status = "Submitted"
+                can_submit = False
+
         result.append(
             {
                 "id": task.id,
@@ -251,6 +296,8 @@ def get_user_tasks(user_id: int, db: Session = Depends(get_db)):
                 "start_date": task.start_date,
                 "end_date": task.end_date,
                 "max_stars": task.max_stars,
+                "submission_status": submission_status,
+                "can_submit": can_submit,
             }
         )
 
@@ -346,6 +393,126 @@ def get_user_announcements(user_id: int, db: Session = Depends(get_db)):
         "top_user_id": top_user_id,
     }
 
+def get_submission_period(task_type: str, occurrence_date: date):
+    if task_type == "one_time":
+        return None, None
+
+    if task_type == "daily":
+        return occurrence_date, occurrence_date
+
+    if task_type == "weekly":
+        start_of_week = occurrence_date - timedelta(days=occurrence_date.weekday())
+        end_of_week = start_of_week + timedelta(days=6)
+        return start_of_week, end_of_week
+
+    if task_type == "monthly":
+        start_of_month = occurrence_date.replace(day=1)
+
+        if occurrence_date.month == 12:
+            next_month = occurrence_date.replace(
+                year=occurrence_date.year + 1,
+                month=1,
+                day=1,
+            )
+        else:
+            next_month = occurrence_date.replace(
+                month=occurrence_date.month + 1,
+                day=1,
+            )
+
+        end_of_month = next_month - timedelta(days=1)
+        return start_of_month, end_of_month
+
+    return occurrence_date, occurrence_date
+
+
+def check_duplicate_submission(
+    db: Session,
+    task: Task,
+    user_id: int,
+    occurrence_date: date,
+):
+    if task.task_type == "one_time":
+        existing_submission = (
+            db.query(TaskSubmission)
+            .filter(TaskSubmission.task_id == task.id)
+            .filter(TaskSubmission.user_id == user_id)
+            .first()
+        )
+
+        if existing_submission:
+            raise HTTPException(
+                status_code=400,
+                detail="You have already submitted this one-time task.",
+            )
+
+        return
+
+    start_date, end_date = get_submission_period(task.task_type, occurrence_date)
+
+    existing_submission = (
+        db.query(TaskSubmission)
+        .filter(TaskSubmission.task_id == task.id)
+        .filter(TaskSubmission.user_id == user_id)
+        .filter(TaskSubmission.occurrence_date >= start_date)
+        .filter(TaskSubmission.occurrence_date <= end_date)
+        .first()
+    )
+
+    if existing_submission:
+        if task.task_type == "daily":
+            message = "You have already submitted this daily task today."
+        elif task.task_type == "weekly":
+            message = "You have already submitted this weekly task for this week."
+        elif task.task_type == "monthly":
+            message = "You have already submitted this monthly task for this month."
+        else:
+            message = "You have already submitted this task."
+
+        raise HTTPException(status_code=400, detail=message)
+
+
+def save_uploaded_file(file: UploadFile):
+    file_extension = os.path.splitext(file.filename or "")[1].lower()
+
+    if file_extension not in ALLOWED_EXTENSIONS:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid file type. Allowed: image, audio, PDF, DOC, DOCX.",
+        )
+
+    if file.content_type not in ALLOWED_FILE_TYPES:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid file content type.",
+        )
+
+    safe_filename = f"{uuid.uuid4()}{file_extension}"
+    file_path = os.path.join(UPLOAD_DIR, safe_filename)
+
+    total_size = 0
+
+    with open(file_path, "wb") as buffer:
+        while True:
+            chunk = file.file.read(1024 * 1024)
+
+            if not chunk:
+                break
+
+            total_size += len(chunk)
+
+            if total_size > MAX_UPLOAD_SIZE:
+                buffer.close()
+                os.remove(file_path)
+
+                raise HTTPException(
+                    status_code=400,
+                    detail="File size should not exceed 10 MB.",
+                )
+
+            buffer.write(chunk)
+
+    return file_path, file.content_type
 
 @app.post("/tasks/{task_id}/submit")
 def submit_task(
@@ -376,18 +543,23 @@ def submit_task(
     if not assigned:
         raise HTTPException(status_code=403, detail="This task is not assigned to your level")
 
+    if occurrence_date < task.start_date or occurrence_date > task.end_date:
+        raise HTTPException(
+            status_code=400,
+            detail="This task is not active for the selected date.",
+        )
+
+    check_duplicate_submission(
+        db=db,
+        task=task,
+        user_id=user_id,
+        occurrence_date=occurrence_date,
+    )
     file_path = None
     file_type = None
 
     if file:
-        file_extension = os.path.splitext(file.filename or "")[1]
-        safe_filename = f"{uuid.uuid4()}{file_extension}"
-        file_path = os.path.join(UPLOAD_DIR, safe_filename)
-
-        with open(file_path, "wb") as buffer:
-            shutil.copyfileobj(file.file, buffer)
-
-        file_type = file.content_type
+        file_path, file_type = save_uploaded_file(file)
 
     existing_submission = (
         db.query(TaskSubmission)
@@ -466,6 +638,7 @@ def get_all_submissions(
                 "stars_given": item.stars_given,
                 "admin_review": item.admin_review,
                 "submitted_at": item.submitted_at,
+                "reviewed_at": item.reviewed_at,
             }
         )
 
@@ -483,6 +656,12 @@ def review_submission(
 
     if not submission:
         raise HTTPException(status_code=404, detail="Submission not found")
+
+    if data.stars_given < 0:
+        raise HTTPException(
+        status_code=400,
+        detail="Stars cannot be negative.",
+        )
 
     if data.stars_given > submission.task.max_stars:
         raise HTTPException(

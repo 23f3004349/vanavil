@@ -562,6 +562,35 @@ textarea {
   background: #FFFF00;
 }
 
+.status-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 6px 10px;
+  border-radius: 999px;
+  font-size: 0.85rem;
+  font-weight: 700;
+  color: white;
+  min-width: 88px;
+}
+
+.status-pending {
+  background: #ff9800;
+}
+
+.status-submitted {
+  background: #2196f3;
+}
+
+.status-reviewed {
+  background: #4caf50;
+}
+
+.open-submit-modal-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
 .task-modal {
   position: fixed;
   inset: 0;
