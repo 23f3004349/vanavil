@@ -4,11 +4,57 @@ const API_BASE_URL = "http://127.0.0.1:8000";
 
 const app = document.querySelector<HTMLDivElement>("#app")!;
 
+let deferredInstallPrompt: any = null;
+
+function createInstallButton() {
+  const btn = document.createElement("button");
+  btn.id = "installBtn";
+  btn.className = "install-btn hidden";
+  btn.textContent = "Install Vanavil App";
+  document.body.appendChild(btn);
+
+  btn.addEventListener("click", async () => {
+    if (!deferredInstallPrompt) return;
+    deferredInstallPrompt.prompt();
+    try {
+      const choice = await deferredInstallPrompt.userChoice;
+      if (choice && choice.outcome === "accepted") {
+        console.log("User accepted the install prompt");
+      } else {
+        console.log("User dismissed the install prompt");
+      }
+    } catch (e) {
+      console.warn('Install prompt error', e);
+    }
+    btn.classList.add("hidden");
+    deferredInstallPrompt = null;
+  });
+
+  return btn;
+}
+
+const installBtn = createInstallButton();
+
+window.addEventListener("beforeinstallprompt", (e: any) => {
+  e.preventDefault();
+  deferredInstallPrompt = e;
+  installBtn.classList.remove("hidden");
+});
+
+window.addEventListener("appinstalled", () => {
+  installBtn.classList.add("hidden");
+  deferredInstallPrompt = null;
+});
+
 function renderLoginSignupPage() {
+  document.body.classList.add("login-background");
   app.innerHTML = `
     <div class="container">
       <div class="card">
-        <h1>Vanavil</h1>
+        <div class="brand-header">
+          <img src="/icons/logo.png" alt="Vanavil logo" class="brand-logo" />
+          <h1>Vanavil</h1>
+        </div>
         <p class="subtitle">Login or create your account</p>
 
         <div class="tabs">
@@ -148,6 +194,8 @@ type User = {
 };
 
 function renderDashboard(user: User) {
+  document.body.classList.remove("login-background");
+
   if (user.is_admin) {
     renderAdminDashboard(user);
   } else {
@@ -159,6 +207,9 @@ function todayString() {
   return new Date().toISOString().slice(0, 10);
 }
 
+const ADMIN_TASKS_PAGE_SIZE = 10;
+const TASKS_PAGE_SIZE = 10;
+
 /* ================= ADMIN DASHBOARD ================= */
 
 function renderAdminDashboard(user: User) {
@@ -166,8 +217,11 @@ function renderAdminDashboard(user: User) {
     <div class="dashboard-layout">
       <aside class="sidebar">
         <div class="sidebar-brand">
-          <h2>Vanavil</h2>
-          <p>Admin Panel</p>
+          <img src="/icons/logo.png" alt="Vanavil logo" class="sidebar-logo" />
+          <div class="sidebar-brand-text">
+            <h2>Vanavil</h2>
+            <p>Admin Panel</p>
+          </div>
         </div>
 
         <nav class="sidebar-menu">
@@ -197,6 +251,10 @@ function renderAdminDashboard(user: User) {
   const pageTitle = document.querySelector<HTMLHeadingElement>("#pageTitle")!;
   const pageContent = document.querySelector<HTMLElement>("#pageContent")!;
 
+  async function loadAdminTasksPage(page: number = 1) {
+    await loadAdminTasks(user, page);
+  }
+
   async function setAdminPage(page: string) {
     menuItems.forEach((item) => {
       item.classList.remove("active");
@@ -211,7 +269,7 @@ function renderAdminDashboard(user: User) {
 
     if (page === "all-tasks") {
       pageTitle.textContent = "All Tasks";
-      await loadAdminTasks(user);
+      await loadAdminTasksPage(1);
     }
 
     if (page === "submissions") {
@@ -326,7 +384,7 @@ function attachCreateTaskForm(user: User) {
   });
 }
 
-async function loadAdminTasks(user: User) {
+async function loadAdminTasks(user: User, page: number = 1) {
   const pageContent = document.querySelector<HTMLElement>("#pageContent")!;
 
   const response = await fetch(`${API_BASE_URL}/admin/tasks`, {
@@ -336,6 +394,10 @@ async function loadAdminTasks(user: User) {
   });
 
   const tasks: any[] = await response.json();
+  const totalPages = Math.max(1, Math.ceil(tasks.length / ADMIN_TASKS_PAGE_SIZE));
+  const currentPage = Math.min(Math.max(page, 1), totalPages);
+  const startIndex = (currentPage - 1) * ADMIN_TASKS_PAGE_SIZE;
+  const pageTasks = tasks.slice(startIndex, startIndex + ADMIN_TASKS_PAGE_SIZE);
 
   pageContent.innerHTML = `
     <div class="content-card">
@@ -344,25 +406,194 @@ async function loadAdminTasks(user: User) {
       ${
         tasks.length === 0
           ? `<p>No tasks created yet.</p>`
-          : tasks
-              .map(
-                (task) => `
-                  <div class="task-item admin-task-item">
-                    <div>
-                      <h3>${task.task_name}</h3>
-                      <p>${task.task_description}</p>
-                      <p>Type: ${task.task_type}</p>
-                      <p>Dates: ${task.start_date} to ${task.end_date}</p>
-                      <p>Max Stars: ${task.max_stars}</p>
-                      <p>Levels: ${task.levels.join(", ")}</p>
-                    </div>
-                  </div>
-                `
-              )
-              .join("")
+          : `
+            <div id="taskEditSection"></div>
+            <div class="table-container">
+              <table class="admin-task-table">
+                <thead>
+                  <tr>
+                    <th>ID</th>
+                    <th>Name</th>
+                    <th>Type</th>
+                    <th>Dates</th>
+                    <th>Stars</th>
+                    <th>Levels</th>
+                    <th>Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  ${pageTasks
+                    .map(
+                      (task) => `
+                        <tr>
+                          <td>${task.id}</td>
+                          <td>${task.task_name}</td>
+                          <td>${task.task_type}</td>
+                          <td>${task.start_date} → ${task.end_date}</td>
+                          <td>${task.max_stars}</td>
+                          <td>${task.levels.join(", ")}</td>
+                          <td>
+                            <button class="small-btn edit-task-btn" data-id="${task.id}">Edit</button>
+                            <button class="small-btn delete-task-btn" data-id="${task.id}">Delete</button>
+                          </td>
+                        </tr>
+                      `
+                    )
+                    .join("")}
+                </tbody>
+              </table>
+            </div>
+            ${
+              totalPages > 1
+                ? `<div class="pagination">${Array.from({ length: totalPages }, (_, index) => index + 1)
+                    .map(
+                      (pageNumber) => `
+                        <button class="page-btn ${pageNumber === currentPage ? "active" : ""}" data-page="${pageNumber}">${pageNumber}</button>
+                      `
+                    )
+                    .join("")}</div>`
+                : `
+                    <div class="pagination"></div>
+                  `
+            }
+          `
       }
     </div>
   `;
+
+  attachAdminTaskActionHandlers(user, tasks, currentPage);
+}
+
+function attachAdminTaskActionHandlers(user: User, tasks: any[], currentPage: number) {
+  const pageContent = document.querySelector<HTMLElement>("#pageContent")!;
+
+  pageContent.querySelectorAll<HTMLButtonElement>(".edit-task-btn").forEach((button) => {
+    button.addEventListener("click", () => {
+      const taskId = Number(button.dataset.id);
+      const task = tasks.find((item) => item.id === taskId);
+      if (task) {
+        renderAdminTaskEditForm(task, user, currentPage);
+      }
+    });
+  });
+
+  pageContent.querySelectorAll<HTMLButtonElement>(".delete-task-btn").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const taskId = Number(button.dataset.id);
+      if (!confirm("Delete this task and all associated submissions?")) {
+        return;
+      }
+
+      const response = await fetch(`${API_BASE_URL}/admin/tasks/${taskId}`, {
+        method: "DELETE",
+        headers: {
+          "x-admin-key": user.admin_key || "",
+        },
+      });
+
+      if (!response.ok) {
+        const data = await response.json();
+        alert(data.detail || "Task deletion failed");
+        return;
+      }
+
+      alert("Task deleted successfully");
+      await loadAdminTasks(user, currentPage);
+    });
+  });
+
+  pageContent.querySelectorAll<HTMLButtonElement>(".page-btn").forEach((button) => {
+    button.addEventListener("click", () => {
+      const pageNumber = Number(button.dataset.page);
+      if (pageNumber && pageNumber !== currentPage) {
+        loadAdminTasks(user, pageNumber);
+      }
+    });
+  });
+}
+
+function renderAdminTaskEditForm(task: any, user: User, currentPage: number) {
+  const editSection = document.querySelector<HTMLElement>('#taskEditSection')!;
+  editSection.innerHTML = `
+    <div class="content-card">
+      <h3>Edit Task #${task.id}</h3>
+      <form id="editTaskForm" class="form dashboard-form">
+        <input type="text" id="editTaskName" placeholder="Task name" value="${task.task_name}" required />
+        <textarea id="editTaskDescription" placeholder="Task description" required>${task.task_description}</textarea>
+        <select id="editTaskType" required>
+          <option value="one_time" ${task.task_type === "one_time" ? "selected" : ""}>One Time</option>
+          <option value="daily" ${task.task_type === "daily" ? "selected" : ""}>Daily</option>
+          <option value="weekly" ${task.task_type === "weekly" ? "selected" : ""}>Weekly</option>
+          <option value="monthly" ${task.task_type === "monthly" ? "selected" : ""}>Monthly</option>
+        </select>
+        <label>Start Date</label>
+        <input type="date" id="editStartDate" value="${task.start_date}" required />
+        <label>End Date / Last Date</label>
+        <input type="date" id="editEndDate" value="${task.end_date}" required />
+        <input type="number" id="editMaxStars" placeholder="Max stars" min="1" max="10" value="${task.max_stars}" required />
+        <div class="level-box">
+          <p>Assign Levels</p>
+          <label><input type="checkbox" name="edit-levels" value="1" ${task.levels.includes(1) ? "checked" : ""} /> Level 1</label>
+          <label><input type="checkbox" name="edit-levels" value="2" ${task.levels.includes(2) ? "checked" : ""} /> Level 2</label>
+        </div>
+        <div class="form-actions">
+          <button type="submit">Save Task</button>
+          <button type="button" id="cancelEditTask">Cancel</button>
+        </div>
+        <p id="editTaskMessage"></p>
+      </form>
+    </div>
+  `;
+
+  const form = document.querySelector<HTMLFormElement>("#editTaskForm")!;
+  const message = document.querySelector<HTMLParagraphElement>("#editTaskMessage")!;
+
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+
+    const levels = Array.from(
+      document.querySelectorAll<HTMLInputElement>('input[name="edit-levels"]:checked')
+    ).map((item) => Number(item.value));
+
+    if (levels.length === 0) {
+      message.textContent = "Please select at least one level.";
+      message.className = "error";
+      return;
+    }
+
+    const response = await fetch(`${API_BASE_URL}/admin/tasks/${task.id}`, {
+      method: "PUT",
+      headers: {
+        "Content-Type": "application/json",
+        "x-admin-key": user.admin_key || "",
+      },
+      body: JSON.stringify({
+        task_name: document.querySelector<HTMLInputElement>("#editTaskName")!.value,
+        task_description: document.querySelector<HTMLTextAreaElement>("#editTaskDescription")!.value,
+        task_type: document.querySelector<HTMLSelectElement>("#editTaskType")!.value,
+        start_date: document.querySelector<HTMLInputElement>("#editStartDate")!.value,
+        end_date: document.querySelector<HTMLInputElement>("#editEndDate")!.value,
+        max_stars: Number(document.querySelector<HTMLInputElement>("#editMaxStars")!.value),
+        levels,
+      }),
+    });
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      message.textContent = data.detail || "Task update failed";
+      message.className = "error";
+      return;
+    }
+
+    message.textContent = "Task updated successfully.";
+    message.className = "success";
+    await loadAdminTasks(user, currentPage);
+  });
+
+  document.querySelector<HTMLButtonElement>("#cancelEditTask")!.addEventListener("click", () => {
+    editSection.innerHTML = "";
+  });
 }
 
 async function loadAdminSubmissions(user: User) {
@@ -399,9 +630,12 @@ async function loadAdminSubmissions(user: User) {
                     <p>Status: ${item.status}</p>
 
                     <form class="review-form" data-id="${item.id}">
-                      <input type="number" name="stars" placeholder="Stars" min="0" required />
-                      <textarea name="review" placeholder="Admin review" required></textarea>
-                      <button type="submit">Submit Review</button>
+                      <input type="number" name="stars" placeholder="Stars" min="0" value="${item.stars_given ?? ""}" required />
+                      <textarea name="review" placeholder="Admin review" required>${item.admin_review ?? ""}</textarea>
+                      <div class="form-actions">
+                        <button type="submit">Save Review</button>
+                        <button type="button" class="delete-review-btn" data-id="${item.id}">Delete Review</button>
+                      </div>
                     </form>
                   </div>
                 `
@@ -415,7 +649,8 @@ async function loadAdminSubmissions(user: User) {
 }
 
 function attachReviewForms(user: User) {
-  const forms = document.querySelectorAll<HTMLFormElement>(".review-form");
+  const pageContent = document.querySelector<HTMLElement>("#pageContent")!;
+  const forms = pageContent.querySelectorAll<HTMLFormElement>(".review-form");
 
   forms.forEach((form) => {
     form.addEventListener("submit", async (event) => {
@@ -446,6 +681,30 @@ function attachReviewForms(user: User) {
       }
     });
   });
+
+  pageContent.querySelectorAll<HTMLButtonElement>(".delete-review-btn").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const submissionId = button.dataset.id;
+      if (!submissionId || !confirm("Delete this review and reopen the task for review?")) {
+        return;
+      }
+
+      const response = await fetch(`${API_BASE_URL}/admin/submissions/${submissionId}`, {
+        method: "DELETE",
+        headers: {
+          "x-admin-key": user.admin_key || "",
+        },
+      });
+
+      if (response.ok) {
+        alert("Review deleted");
+        await loadAdminSubmissions(user);
+      } else {
+        const data = await response.json();
+        alert(data.detail || "Delete review failed");
+      }
+    });
+  });
 }
 
 /* ================= USER DASHBOARD ================= */
@@ -455,12 +714,16 @@ function renderUserDashboard(user: User) {
     <div class="dashboard-layout">
       <aside class="sidebar">
         <div class="sidebar-brand">
-          <h2>Vanavil</h2>
-          <p>${user.full_name} - Level ${user.level}</p>
+          <img src="/icons/logo.png" alt="Vanavil logo" class="sidebar-logo" />
+          <div class="sidebar-brand-text">
+            <h2>Vanavil</h2>
+            <p>${user.full_name} - Level ${user.level}</p>
+          </div>
         </div>
 
         <nav class="sidebar-menu">
-          <button class="menu-item active" data-page="tasks">My Tasks</button>
+          <button class="menu-item active" data-page="announcements">Announcements</button>
+          <button class="menu-item" data-page="tasks">My Tasks</button>
           <button class="menu-item" data-page="scoreboard">Scoreboard</button>
           <button class="menu-item" data-page="reviews">Admin Reviews</button>
         </nav>
@@ -471,7 +734,7 @@ function renderUserDashboard(user: User) {
       <main class="dashboard-main">
         <header class="dashboard-header">
           <div>
-            <h1 id="pageTitle">My Tasks</h1>
+            <h1 id="pageTitle">Announcements</h1>
             <p>Welcome back, ${user.full_name}</p>
           </div>
         </header>
@@ -490,9 +753,14 @@ function renderUserDashboard(user: User) {
       if (item.dataset.page === page) item.classList.add("active");
     });
 
+    if (page === "announcements") {
+      pageTitle.textContent = "Announcements";
+      await loadUserAnnouncements(user);
+    }
+
     if (page === "tasks") {
       pageTitle.textContent = "My Tasks";
-      await loadUserTasks(user);
+      await loadUserTasks(user, 1);
     }
 
     if (page === "scoreboard") {
@@ -518,84 +786,291 @@ function renderUserDashboard(user: User) {
     window.location.reload();
   });
 
-  setUserPage("tasks");
+  setUserPage("announcements");
 }
 
-async function loadUserTasks(user: User) {
+async function loadUserAnnouncements(user: User) {
   const pageContent = document.querySelector<HTMLElement>("#pageContent")!;
+
+  const response = await fetch(`${API_BASE_URL}/users/${user.id}/announcements`);
+  const data = await response.json();
+
+  const dueTasks: any[] = data.due_tasks || [];
+  const reviews: any[] = data.recent_reviews || [];
+  const userRank: number | null = data.scoreboard_rank ?? null;
+  const isTopRanked: boolean = data.is_top_ranked === true;
+
+  pageContent.innerHTML = `
+    <div class="content-card">
+      <h2>Announcements</h2>
+
+      <div class="announcement-block">
+        <h3>Tasks due today</h3>
+        ${
+          dueTasks.length === 0
+            ? `<p>Great job! There are no tasks due today.</p>`
+            : `<ul>${dueTasks
+                .map(
+                  (task) => `
+                    <li>
+                      <strong>${task.task_name}</strong> — ${task.task_description}
+                      <div>Due: ${task.end_date}</div>
+                    </li>
+                  `
+                )
+                .join("")}</ul>`
+        }
+      </div>
+
+      <div class="announcement-block">
+        <h3>Reviewed tasks</h3>
+        ${
+          reviews.length === 0
+            ? `<p>No reviews yet. Keep completing tasks and ask your teacher to review them.</p>`
+            : `<ul>${reviews
+                .map(
+                  (review) => `
+                    <li>
+                      <strong>${review.task_name}</strong> — ${review.stars_given} / ${review.max_stars} stars
+                      ${review.admin_review ? `<div>${review.admin_review}</div>` : ``}
+                    </li>
+                  `
+                )
+                .join("")}</ul>`
+        }
+      </div>
+
+      <div class="announcement-block">
+        <h3>Scoreboard update</h3>
+        ${userRank
+          ? `<p>You are currently ranked <strong>${userRank}</strong> on the scoreboard.</p>
+             ${isTopRanked ? `<p>🎉 You are top of the scoreboard!</p>` : ``}`
+          : `<p>Your score is not available yet. Complete tasks to appear on the scoreboard.</p>`}
+      </div>
+    </div>
+  `;
+}
+
+async function loadUserTasks(user: User, page: number = 1) {
+  const pageContent = document.querySelector<HTMLElement>('#pageContent')!;
 
   const response = await fetch(`${API_BASE_URL}/users/${user.id}/tasks`);
   const tasks: any[] = await response.json();
 
+  const today = todayString();
+  const todayTasks = tasks.filter((task) => task.end_date === today);
+  const otherTasks = tasks.filter((task) => task.end_date !== today);
+  const sortedTasks = [...todayTasks, ...otherTasks];
+
+  const totalPages = Math.max(1, Math.ceil(sortedTasks.length / TASKS_PAGE_SIZE));
+  const currentPage = Math.min(Math.max(page, 1), totalPages);
+  const pageTasks = sortedTasks.slice((currentPage - 1) * TASKS_PAGE_SIZE, currentPage * TASKS_PAGE_SIZE);
+
   pageContent.innerHTML = `
     <div class="content-card">
       <h2>My Tasks</h2>
-
       ${
         tasks.length === 0
           ? `<p>No tasks assigned for your level now.</p>`
-          : tasks
-              .map(
-                (task) => `
-                  <div class="task-submit-card">
-                    <h3>${task.task_name}</h3>
-                    <p>${task.task_description}</p>
-                    <p>Type: ${task.task_type}</p>
-                    <p>Starts On: ${task.start_date}</p>
-                    <p>Last Date: ${task.end_date}</p>
-                    <p>Max Stars: ${task.max_stars}</p>
-
-                    <form class="submit-task-form" data-task-id="${task.id}">
-                      <textarea name="text_answer" placeholder="Write something about your task"></textarea>
-                      <input type="file" name="file" accept="image/*,audio/*,.pdf,.doc,.docx" />
-                      <button type="submit">Submit Task</button>
-                    </form>
-                  </div>
-                `
-              )
-              .join("")
+          : `
+              <p class="small-note">Today's tasks are shown first.</p>
+              <div class="table-container">
+                <table class="admin-task-table user-task-table">
+                  <thead>
+                    <tr>
+                      <th>Task</th>
+                      <th>Type</th>
+                      <th>Start</th>
+                      <th>End</th>
+                      <th>Stars</th>
+                      <th>Submit</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    ${pageTasks
+                      .map(
+                        (task) => {
+                          const safeDescription = String(task.task_description)
+                            .replace(/&/g, '&amp;')
+                            .replace(/</g, '&lt;')
+                            .replace(/>/g, '&gt;')
+                            .replace(/"/g, '&quot;')
+                            .replace(/'/g, '&#39;');
+                          return `
+                            <tr>
+                              <td class="task-name-cell" data-description="${safeDescription}">${task.task_name}</td>
+                              <td>${task.task_type}</td>
+                              <td>${task.start_date}</td>
+                              <td>${task.end_date}</td>
+                              <td>${task.max_stars}</td>
+                              <td>
+                                <button type="button" class="open-submit-modal-btn" data-task-id="${task.id}" data-task-name="${task.task_name}" data-description="${safeDescription}">Submit</button>
+                              </td>
+                            </tr>
+                          `;
+                        }
+                      )
+                      .join('')}
+                  </tbody>
+                </table>
+              </div>
+              <div class="pagination">
+                ${Array.from({ length: totalPages }, (_, index) => index + 1)
+                  .map(
+                    (pageNumber) => `
+                      <button class="page-btn ${pageNumber === currentPage ? 'active' : ''}" data-page="${pageNumber}">${pageNumber}</button>
+                    `
+                  )
+                  .join('')}
+              </div>
+            `
       }
     </div>
   `;
 
-  attachSubmitTaskForms(user);
-}
+  attachTaskDescriptionHandlers(pageContent);
+  attachTaskSubmitButtons(user, pageContent);
 
-function attachSubmitTaskForms(user: User) {
-  const forms = document.querySelectorAll<HTMLFormElement>(".submit-task-form");
-
-  forms.forEach((form) => {
-    form.addEventListener("submit", async (event) => {
-      event.preventDefault();
-
-      const taskId = form.dataset.taskId!;
-      const textAnswer = form.querySelector<HTMLTextAreaElement>('textarea[name="text_answer"]')!.value;
-      const fileInput = form.querySelector<HTMLInputElement>('input[name="file"]')!;
-
-      const formData = new FormData();
-      formData.append("user_id", String(user.id));
-      formData.append("occurrence_date", todayString());
-      formData.append("text_answer", textAnswer);
-
-      if (fileInput.files && fileInput.files.length > 0) {
-        formData.append("file", fileInput.files[0]);
-      }
-
-      const response = await fetch(`${API_BASE_URL}/tasks/${taskId}/submit`, {
-        method: "POST",
-        body: formData,
-      });
-
-      const data = await response.json();
-
-      if (response.ok) {
-        alert("Task submitted successfully");
-        form.reset();
-      } else {
-        alert(data.detail || "Task submission failed");
+  pageContent.querySelectorAll<HTMLButtonElement>('.page-btn').forEach((button) => {
+    button.addEventListener('click', () => {
+      const pageNumber = Number(button.dataset.page);
+      if (pageNumber && pageNumber !== currentPage) {
+        loadUserTasks(user, pageNumber);
       }
     });
   });
+}
+
+function attachTaskDescriptionHandlers(pageContent: HTMLElement) {
+  pageContent.querySelectorAll<HTMLTableCellElement>('.task-name-cell').forEach((cell) => {
+    cell.addEventListener('click', () => {
+      const description = cell.dataset.description || 'No description available.';
+      showTaskDescriptionModal(description);
+    });
+  });
+}
+
+function showTaskDescriptionModal(description: string) {
+  const existingModal = document.querySelector<HTMLElement>('#taskDescriptionModal');
+  if (existingModal) {
+    existingModal.remove();
+  }
+
+  const modal = document.createElement('div');
+  modal.id = 'taskDescriptionModal';
+  modal.className = 'task-modal';
+  modal.innerHTML = `
+    <div class="task-modal-content">
+      <button class="task-modal-close">×</button>
+      <h3>Task Description</h3>
+      <p>${description}</p>
+    </div>
+  `;
+
+  modal.querySelector<HTMLButtonElement>('.task-modal-close')?.addEventListener('click', () => {
+    modal.remove();
+  });
+
+  modal.addEventListener('click', (event) => {
+    if (event.target === modal) {
+      modal.remove();
+    }
+  });
+
+  document.body.appendChild(modal);
+}
+
+function attachTaskSubmitButtons(user: User, pageContent: HTMLElement) {
+  pageContent.querySelectorAll<HTMLButtonElement>('.open-submit-modal-btn').forEach((button) => {
+    button.addEventListener('click', () => {
+      const taskId = Number(button.dataset.taskId);
+      const taskName = button.dataset.taskName || 'Task';
+      const taskDescription = button.dataset.description || 'No description available.';
+      openSubmitTaskModal(taskId, taskName, taskDescription, user);
+    });
+  });
+}
+
+function openSubmitTaskModal(taskId: number, taskName: string, taskDescription: string, user: User) {
+  const existingModal = document.querySelector<HTMLElement>('#taskSubmitModal');
+  if (existingModal) {
+    existingModal.remove();
+  }
+
+  const modal = document.createElement('div');
+  modal.id = 'taskSubmitModal';
+  modal.className = 'task-modal';
+  modal.innerHTML = `
+    <div class="task-modal-content yellow-modal">
+      <button class="task-modal-close">×</button>
+      <h3>Submit Task</h3>
+      <p><strong>${taskName}</strong></p>
+      <p>${taskDescription}</p>
+      <form id="submitTaskModalForm" class="task-submit-modal-form">
+        <textarea name="text_answer" placeholder="Write about the task (optional)"></textarea>
+        <label class="file-upload-button">
+          Choose file
+          <input type="file" name="file" accept="image/*,audio/*,.pdf,.doc,.docx" />
+        </label>
+        <span class="selected-file-name"></span>
+        <button type="submit" class="orange-submit-btn">Submit</button>
+      </form>
+    </div>
+  `;
+
+  const closeButton = modal.querySelector<HTMLButtonElement>('.task-modal-close')!;
+  closeButton.addEventListener('click', () => {
+    modal.remove();
+  });
+
+  modal.addEventListener('click', (event) => {
+    if (event.target === modal) {
+      modal.remove();
+    }
+  });
+
+  const fileInput = modal.querySelector<HTMLInputElement>('input[type="file"]')!;
+  const fileNameSpan = modal.querySelector<HTMLSpanElement>('.selected-file-name')!;
+
+  fileInput.addEventListener('change', () => {
+    if (fileInput.files && fileInput.files.length > 0) {
+      fileNameSpan.textContent = fileInput.files[0].name;
+    } else {
+      fileNameSpan.textContent = '';
+    }
+  });
+
+  const form = modal.querySelector<HTMLFormElement>('#submitTaskModalForm')!;
+  form.addEventListener('submit', async (event) => {
+    event.preventDefault();
+
+    const textAnswer = form.querySelector<HTMLTextAreaElement>('textarea[name="text_answer"]')!.value;
+    const file = fileInput.files && fileInput.files.length > 0 ? fileInput.files[0] : null;
+
+    const formData = new FormData();
+    formData.append('user_id', String(user.id));
+    formData.append('occurrence_date', todayString());
+    formData.append('text_answer', textAnswer);
+    if (file) {
+      formData.append('file', file);
+    }
+
+    const response = await fetch(`${API_BASE_URL}/tasks/${taskId}/submit`, {
+      method: 'POST',
+      body: formData,
+    });
+
+    const data = await response.json();
+
+    if (response.ok) {
+      alert('Task submitted successfully');
+      modal.remove();
+    } else {
+      alert(data.detail || 'Task submission failed');
+    }
+  });
+
+  document.body.appendChild(modal);
 }
 
 async function loadUserReviews(user: User) {
@@ -611,18 +1086,34 @@ async function loadUserReviews(user: User) {
       ${
         reviews.length === 0
           ? `<p>No reviews yet.</p>`
-          : reviews
-              .map(
-                (review) => `
-                  <div class="review-item">
-                    <h3>${review.task_name}</h3>
-                    <p>Stars: ${review.stars_given} / ${review.max_stars}</p>
-                    <p>${review.admin_review}</p>
-                    <span>${review.reviewed_at || ""}</span>
-                  </div>
-                `
-              )
-              .join("")
+          : `
+              <div class="table-container">
+                <table class="review-table">
+                  <thead>
+                    <tr>
+                      <th>Task</th>
+                      <th>Stars</th>
+                      <th>Review</th>
+                      <th>Reviewed At</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    ${reviews
+                      .map(
+                        (review) => `
+                          <tr>
+                            <td>${review.task_name}</td>
+                            <td>${review.stars_given} / ${review.max_stars}</td>
+                            <td>${review.admin_review || "-"}</td>
+                            <td>${review.reviewed_at || "-"}</td>
+                          </tr>
+                        `
+                      )
+                      .join("")}
+                  </tbody>
+                </table>
+              </div>
+            `
       }
     </div>
   `;
@@ -681,4 +1172,17 @@ if (savedUser) {
   renderDashboard(JSON.parse(savedUser));
 } else {
   renderLoginSignupPage();
+}
+
+if ("serviceWorker" in navigator) {
+  window.addEventListener("load", () => {
+    navigator.serviceWorker
+      .register("/service-worker.js")
+      .then(() => {
+        console.log("Vanavil service worker registered");
+      })
+      .catch((error) => {
+        console.error("Service worker registration failed:", error);
+      });
+  });
 }

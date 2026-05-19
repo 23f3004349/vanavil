@@ -171,6 +171,56 @@ def get_all_tasks(
     return result
 
 
+@app.put("/admin/tasks/{task_id}")
+def update_task(
+    task_id: int,
+    data: TaskCreateRequest,
+    db: Session = Depends(get_db),
+    _: None = Depends(check_admin),
+):
+    task = db.query(Task).filter(Task.id == task_id).first()
+
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+
+    if not data.levels:
+        raise HTTPException(status_code=400, detail="Please select at least one level")
+
+    task.task_name = data.task_name
+    task.task_description = data.task_description
+    task.task_type = data.task_type
+    task.start_date = data.start_date
+    task.end_date = data.end_date
+    task.max_stars = data.max_stars
+
+    db.query(TaskLevel).filter(TaskLevel.task_id == task_id).delete()
+    for level in data.levels:
+        db.add(TaskLevel(task_id=task_id, level=level))
+
+    db.commit()
+    db.refresh(task)
+
+    return {"message": "Task updated successfully"}
+
+
+@app.delete("/admin/tasks/{task_id}")
+def delete_task(
+    task_id: int,
+    db: Session = Depends(get_db),
+    _: None = Depends(check_admin),
+):
+    task = db.query(Task).filter(Task.id == task_id).first()
+
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+
+    db.query(TaskSubmission).filter(TaskSubmission.task_id == task_id).delete()
+    db.delete(task)
+    db.commit()
+
+    return {"message": "Task deleted successfully"}
+
+
 @app.get("/users/{user_id}/tasks")
 def get_user_tasks(user_id: int, db: Session = Depends(get_db)):
     user = db.query(User).filter(User.id == user_id).first()
@@ -205,6 +255,96 @@ def get_user_tasks(user_id: int, db: Session = Depends(get_db)):
         )
 
     return result
+
+
+@app.get("/users/{user_id}/announcements")
+def get_user_announcements(user_id: int, db: Session = Depends(get_db)):
+    user = db.query(User).filter(User.id == user_id).first()
+
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    today = date.today()
+
+    due_tasks = (
+        db.query(Task)
+        .join(TaskLevel, Task.id == TaskLevel.task_id)
+        .filter(TaskLevel.level == user.level)
+        .filter(Task.start_date <= today)
+        .filter(Task.end_date == today)
+        .order_by(Task.id.desc())
+        .all()
+    )
+
+    due_tasks_result = [
+        {
+            "id": task.id,
+            "task_name": task.task_name,
+            "task_description": task.task_description,
+            "task_type": task.task_type,
+            "start_date": task.start_date,
+            "end_date": task.end_date,
+            "max_stars": task.max_stars,
+        }
+        for task in due_tasks
+    ]
+
+    reviews = (
+        db.query(TaskSubmission)
+        .filter(TaskSubmission.user_id == user.id)
+        .filter(TaskSubmission.status == "reviewed")
+        .filter(func.date(TaskSubmission.reviewed_at) == today)
+        .order_by(TaskSubmission.id.desc())
+        .limit(3)
+        .all()
+    )
+
+    review_results = [
+        {
+            "id": item.id,
+            "task_name": item.task.task_name,
+            "stars_given": item.stars_given,
+            "max_stars": item.task.max_stars,
+            "admin_review": item.admin_review,
+            "reviewed_at": item.reviewed_at,
+        }
+        for item in reviews
+    ]
+
+    scoreboard_rows = (
+        db.query(
+            User.id,
+            User.full_name,
+            User.level,
+            func.count(TaskSubmission.id).label("completed_tasks"),
+            func.coalesce(func.sum(TaskSubmission.stars_given), 0).label("total_stars"),
+        )
+        .outerjoin(TaskSubmission, User.id == TaskSubmission.user_id)
+        .filter((TaskSubmission.status == "reviewed") | (TaskSubmission.status.is_(None)))
+        .group_by(User.id)
+        .order_by(func.coalesce(func.sum(TaskSubmission.stars_given), 0).desc())
+        .all()
+    )
+
+    rank = 1
+    user_rank = None
+    top_user_id = None
+
+    for row in scoreboard_rows:
+        if rank == 1:
+            top_user_id = row.id
+        if row.id == user.id:
+            user_rank = rank
+            break
+        rank += 1
+
+    return {
+        "due_tasks": due_tasks_result,
+        "recent_reviews": review_results,
+        "scoreboard_rank": user_rank,
+        "is_top_ranked": user_rank == 1,
+        "top_user_id": top_user_id,
+    }
 
 
 @app.post("/tasks/{task_id}/submit")
@@ -248,6 +388,36 @@ def submit_task(
             shutil.copyfileobj(file.file, buffer)
 
         file_type = file.content_type
+
+    existing_submission = (
+        db.query(TaskSubmission)
+        .filter(TaskSubmission.task_id == task_id)
+        .filter(TaskSubmission.user_id == user_id)
+        .order_by(TaskSubmission.id.desc())
+        .first()
+    )
+
+    if existing_submission and existing_submission.status == "reviewed":
+        raise HTTPException(status_code=400, detail="This task has already been reviewed and is closed")
+
+    if existing_submission and existing_submission.status == "submitted":
+        if file_path and existing_submission.file_path and existing_submission.file_path != file_path:
+            try:
+                os.remove(existing_submission.file_path)
+            except OSError:
+                pass
+
+        existing_submission.occurrence_date = occurrence_date
+        existing_submission.text_answer = text_answer
+        existing_submission.file_path = file_path or existing_submission.file_path
+        existing_submission.file_type = file_type or existing_submission.file_type
+        db.commit()
+        db.refresh(existing_submission)
+
+        return {
+            "message": "Task resubmitted successfully",
+            "submission_id": existing_submission.id,
+        }
 
     submission = TaskSubmission(
         task_id=task_id,
@@ -329,6 +499,28 @@ def review_submission(
     db.refresh(submission)
 
     return {"message": "Review submitted successfully"}
+
+
+@app.delete("/admin/submissions/{submission_id}")
+def delete_review(
+    submission_id: int,
+    db: Session = Depends(get_db),
+    _: None = Depends(check_admin),
+):
+    submission = db.query(TaskSubmission).filter(TaskSubmission.id == submission_id).first()
+
+    if not submission:
+        raise HTTPException(status_code=404, detail="Submission not found")
+
+    submission.status = "submitted"
+    submission.stars_given = None
+    submission.admin_review = None
+    submission.reviewed_at = None
+
+    db.commit()
+    db.refresh(submission)
+
+    return {"message": "Review deleted and task reopened for review"}
 
 
 @app.get("/users/{user_id}/reviews")
